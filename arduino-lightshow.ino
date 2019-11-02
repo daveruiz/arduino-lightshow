@@ -18,11 +18,6 @@
 #define SAMPLES       128
 #define FRAME_TIME    63       // Desired time per frame in ms (63 is ~15 fps)
 
-#define COL_XRES      6        // Total number of  columns in the display, must be <= SAMPLES/2
-#define COL_YRES      63       // Total number of  rows in the display
-#define COL_WIDTH     21
-#define COL_DECAY     2
-
 #define LD_COUNT      5
 #define LD_FLASH      0
 #define LD_ERROR      4
@@ -35,19 +30,19 @@
 #define ST_INCREMENT  20
 #define ST_DECAY      10
 
-#define AMP_MAX_MULT  5
+#define AMP_MAX_MULT  8
 #define AMP_MAX_LEVEL 64
-#define AMP_RELEASE   .02
+#define AMP_RELEASE   .04
 
-const uint8_t LED[] = { 12, 11, 10, 9, 6 }; // PWD needed
-const uint8_t LED_THRESHOLD[] = { 8, 14, 10, 14, 14  };
+const uint8_t LED[] = { 12, 11, 10, 9, 6 };                 // Analog
+const uint8_t LED_THRESHOLD[] = { 16, 11, 8, 10, 13 };      
 
 #ifdef FREE_RUN_MODE
 const uint8_t FREQ_SPLITS[][2] { 
    { 0, 1 },
-   { 1, 3 },
-   { 3, 5 },
-   { 5, 10 },
+   { 1, 4 },
+   { 4, 7 },
+   { 7, 10 },
    { 10, 32 }  
 };
 #else
@@ -56,7 +51,7 @@ const uint8_t FREQ_SPLITS[][2] {
    { 1, 5 },
    { 5, 10 },
    { 10, 18 },
-   { 18, 64 }  
+   { 18, 32 }  
 };
 #endif
 
@@ -70,8 +65,6 @@ int8_t vReal[SAMPLES];
 int8_t vImag[SAMPLES];
 
 uint8_t decay = 1;
-uint8_t peaks[COL_XRES];
-uint8_t maxPeak = 64;
 uint8_t strobe = 0;
 double amplify = 1;
 
@@ -87,6 +80,8 @@ void fps() {
 }
  
 void setup() {
+  Serial.begin(115200);
+  
   // Setup leds
   for (uint8_t i=0; i<LD_COUNT; i++) {
     pinMode(LED[i], OUTPUT);
@@ -121,10 +116,11 @@ void setup() {
 }
  
 void loop() {
-  char data_avgs[COL_XRES];
-  char led_avgs[LD_COUNT] = { 0, 0, 0, 0, 0 };
+  uint8_t led_avgs[LD_COUNT] = { 0, 0, 0, 0, 0 };
+
+  display.clearDisplay();
   
-  // ++ Sampling
+  // Sampling
   uint8_t inputPeak = 0;
   for(uint8_t i=0; i<SAMPLES; i++) {
     #ifdef FREE_RUN_MODE
@@ -140,10 +136,8 @@ void loop() {
       inputPeak = abs(vReal[i]);
     }
   }
-  // -- Sampling
-  
-  display.clearDisplay();
 
+  // Amplify
   double ampPeak = inputPeak * amplify;
   if (ampPeak < AMP_MAX_LEVEL) {
     if (amplify < AMP_MAX_MULT) {
@@ -153,7 +147,6 @@ void loop() {
     amplify = (double) AMP_MAX_LEVEL / inputPeak;
   }
 
-  // amplify
   for(int i=0; i<SAMPLES; i++) {
     vReal[i] = (double) amplify * vReal[i];
     
@@ -161,60 +154,30 @@ void loop() {
     display.drawPixel(i*2, 32 + vReal[i] / 4, 1);
   }
   
-  // ++ FFT
+  // FFT
   fix_fft(vReal, vImag, 7, 0);   
-  
   int8_t fundamental = -1;
-  for (byte i = 0; i < 32; i++) {
+  for (byte i = 0; i < 64; i++) {
     vReal[i] = sqrt(vReal[i] * vReal[i] + vImag[i] * vImag[i]); // Make values positive
     if (fundamental == -1 || vReal[fundamental] < vReal[i]) {
       fundamental = i;
     }
   }
-  // -- FFT
-  
-  // ++ re-arrange FFT result to match with no. of columns on display ( COL_XRES )
-  int step = 64 / COL_XRES; 
-  char c=0;
-  for(char i=0; i<64; i+=step)  
-  {
-    data_avgs[c] = 0;
-    for (char k=0 ; k<step; k++) {
-      char t = i + k;
-      data_avgs[c] = data_avgs[c] + vReal[t];
-  
-      // Leds
-      for (char j=0; j<LD_COUNT; j++) {
-        if (t >= FREQ_SPLITS[j][0] && t < FREQ_SPLITS[j][1]) {
-          led_avgs[j] = led_avgs[j] + vReal[t];
-        }
+ 
+  // Led value calculation
+  for(uint8_t i=0; i<32; i++) {
+    // Leds
+    for (char j=0; j<LD_COUNT; j++) {
+      if (i >= FREQ_SPLITS[j][0] && i < FREQ_SPLITS[j][1]) {
+        led_avgs[j] = led_avgs[j] + vReal[i];
       }
     }
-    data_avgs[c] = data_avgs[c]/step; 
-    c++;
   }
-  // -- re-arrange FFT result to match with no. of columns on display ( COL_XRES )
-  
-  // ++ send to display according measured value 
-  
-  // draw fft
-  for(char i = 0; i < COL_XRES; i++)
-  {
-    data_avgs[i] = constrain(data_avgs[i],0,16);              // set max & min values for buckets
-    data_avgs[i] = map(data_avgs[i], 0, 16, 0, COL_YRES);     // remap averaged values to COL_YRES
-    int8_t yvalue=data_avgs[i];
-  
-    peaks[i] = max(0, (double) peaks[i] - COL_DECAY * delta);    // decay 
-    if (yvalue > peaks[i]) {
-      peaks[i] = yvalue;
-    }
-    yvalue = peaks[i];    
-  
-    // draw a bar
-    display.drawRect(i * COL_WIDTH, 63 - yvalue, COL_WIDTH -1, 1 + yvalue, 1);
-  
-    maxPeak = max(yvalue, maxPeak);
-    maxPeak--;
+    
+  // draw columns
+  for(uint8_t i=0; i<32; i++) {
+    uint8_t value = vReal[i];
+    display.drawFastVLine(i * 4, 63 - value, value, 1);  
   }
 
   // Flash only turns on when increases
@@ -230,9 +193,8 @@ void loop() {
       ? flash_on 
       : led_avgs[j] > LED_THRESHOLD[j];
 
-    //if (j == LD_FLASH) {
-    if (high_energy) {
-      // High energy. Fast leds
+    if (j == LD_FLASH) {
+       // High energy. Fast leds
       led_values[j] = flash_on ? 255 : 0;
     } else {
       if (on) {
@@ -251,6 +213,9 @@ void loop() {
     } else {
       display.drawRoundRect(j * 13 + 4 - siz / 2, 4 - siz / 2, siz, siz, 2, 1);  
     }
+
+    // Debug
+    display.drawFastHLine(j * 13, 10, led_avgs[j] / 8, 1);
     
     analogWrite(LED[j], (double) siz / 8 * 128);
   }
