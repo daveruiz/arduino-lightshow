@@ -31,7 +31,7 @@
 #define ENERGY_MAX    255
 #define ENERGY_MULT   3.2
 #define ENERGY_KICK   5
-#define ENERGY_DECAY  15
+#define ENERGY_DECAY  18
 #define ENERGY_HIGH   180
 #define ENERGY_BASE_FREQ  3
 #define ENERGY_SMOOTHNESS 8
@@ -40,16 +40,20 @@
 // ST_START value, the flash led starts to blink.
 // It´s resetted every time a kick is detected
 #define ST_START      120
-#define ST_INCREMENT  10
-#define ST_DECAY      20
+#define ST_INCREMENT  5
+#define ST_DECAY      15
+
+// Silence detection
+#define SILENCE_MIN_LEVEL 5
+#define SILENCE_FRAMES    20
 
 // Trying to keep audio signal high all the time
-#define AMP_MAX_MULT  4
+#define AMP_MAX_MULT  2
 #define AMP_MAX_LEVEL 32
 #define AMP_RELEASE   .04
 
 const uint8_t LED[] = { 12, 11, 10, 9, 6 };                 // PWD enabled pins
-const uint8_t LED_THRESHOLD[] = { 7, 4, 3, 5, 7 };      
+const uint8_t LED_THRESHOLD[] = { 9, 7, 6, 7, 10 };
 
 #ifdef FREE_RUN_MODE
 const uint8_t FREQ_SPLITS[][2] { 
@@ -61,7 +65,7 @@ const uint8_t FREQ_SPLITS[][2] {
 };
 #else
 const uint8_t FREQ_SPLITS[][2] { 
-   { 0, 1 },
+   { 0, 2 },
    { 1, 5 },
    { 5, 10 },
    { 10, 18 },
@@ -84,6 +88,7 @@ double energy = 0;
 uint8_t energySmooth = 0;
 uint8_t strobe = 0;
 bool strobePos = 0;
+uint8_t silence = 0;
 
 // Initialize screen. Following line is for OLED 128x64 connected by I2C
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
@@ -153,7 +158,23 @@ void loop() {
     }
   }
 
-  // Amplify
+  // Silence detection
+  if (inputPeak < SILENCE_MIN_LEVEL) {
+    if (silence < SILENCE_FRAMES) {
+      silence++;
+    } else {
+      // Flat vReal to 0. We want to keep going with display and leds.
+      for (i=0; i<SAMPLES; i++) {
+        vReal[i] = 0;
+      }
+      // also truncate the energy
+      energy = 0;
+    }
+  } else {
+    silence = 0;
+  }
+
+  // Amplify (skip if silence  
   ampPeak = (double) inputPeak * amplify;
   if (ampPeak < AMP_MAX_LEVEL) {
     if (amplify < AMP_MAX_MULT) {
@@ -274,7 +295,7 @@ void loop() {
   }
 
   // peak line
-  display.drawFastHLine(64, 0, ampPeak / AMP_MAX_LEVEL * 64, 1);
+  display.drawFastHLine(64, 0, (double) ampPeak / AMP_MAX_LEVEL * 64, 1);
 
   // amp line
   display.drawFastHLine(64, 2, amplify / AMP_MAX_MULT * 64, 1);
