@@ -11,7 +11,8 @@
 #include <Wire.h>
 #include <Adafruit_SSD1306.h>
 
-// #define FREE_RUN_MODE
+// #define FREE_RUN_MODE       // Requires the AREF pin. Not working in Mini pro :(
+                               // Normal mode uses internal DEFAULT for reference
 
 #define SCR_ROTATION  2
 
@@ -53,9 +54,11 @@
 #define AMP_RELEASE   .04
 
 const uint8_t LED[] = { 12, 11, 10, 9, 6 };                 // PWD enabled pins
-const uint8_t LED_THRESHOLD[] = { 9, 7, 6, 7, 10 };
 
+// Frequency is very timing dependant, so we define different
+// values for different methods.
 #ifdef FREE_RUN_MODE
+const uint8_t LED_THRESHOLD[] = { 9, 7, 6, 7, 10 };
 const uint8_t FREQ_SPLITS[][2] { 
    { 0, 1 },
    { 1, 4 },
@@ -64,6 +67,7 @@ const uint8_t FREQ_SPLITS[][2] {
    { 10, 32 }
 };
 #else
+const uint8_t LED_THRESHOLD[] = { 9, 7, 6, 7, 10 };
 const uint8_t FREQ_SPLITS[][2] { 
    { 0, 2 },
    { 1, 5 },
