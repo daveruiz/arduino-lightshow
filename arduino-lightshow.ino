@@ -2,7 +2,7 @@
  * Lightshow Arduino nano version
  * 
  * D12 - D8 : lights
- * Ref - Voltage reference
+ * Ref - Voltage reference (Only FREE RUN mode)
  * A0  - Audio input
  * A4 + A5 - Display
  */
@@ -18,6 +18,7 @@
 #define SAMPLES       128
 #define FRAME_TIME    63       // Desired time per frame in ms (63 is ~15 fps)
 
+// Led control
 #define LD_COUNT      5
 #define LD_FLASH      0
 #define LD_ERROR      4
@@ -25,17 +26,30 @@
 #define LD_MIN_DECAY  1
 #define LD_MAX_DECAY  100
 
-#define ST_TRIGGER_LEDS 4
-#define ST_START      80
-#define ST_INCREMENT  20
-#define ST_DECAY      10
+// Energy value increases with the sum of frequencies
+// and decreases on the time.
+#define ENERGY_MAX    255
+#define ENERGY_MULT   3.2
+#define ENERGY_KICK   5
+#define ENERGY_DECAY  15
+#define ENERGY_HIGH   180
+#define ENERGY_BASE_FREQ  3
+#define ENERGY_SMOOTHNESS 8
 
-#define AMP_MAX_MULT  8
-#define AMP_MAX_LEVEL 64
+// Strobe is increased on high energy. When it reach
+// ST_START value, the flash led starts to blink.
+// It´s resetted every time a kick is detected
+#define ST_START      120
+#define ST_INCREMENT  10
+#define ST_DECAY      20
+
+// Trying to keep audio signal high all the time
+#define AMP_MAX_MULT  4
+#define AMP_MAX_LEVEL 32
 #define AMP_RELEASE   .04
 
-const uint8_t LED[] = { 12, 11, 10, 9, 6 };                 // Analog
-const uint8_t LED_THRESHOLD[] = { 16, 11, 8, 10, 13 };      
+const uint8_t LED[] = { 12, 11, 10, 9, 6 };                 // PWD enabled pins
+const uint8_t LED_THRESHOLD[] = { 7, 4, 3, 5, 7 };      
 
 #ifdef FREE_RUN_MODE
 const uint8_t FREQ_SPLITS[][2] { 
@@ -43,7 +57,7 @@ const uint8_t FREQ_SPLITS[][2] {
    { 1, 4 },
    { 4, 7 },
    { 7, 10 },
-   { 10, 32 }  
+   { 10, 32 }
 };
 #else
 const uint8_t FREQ_SPLITS[][2] { 
@@ -59,15 +73,16 @@ const uint8_t FREQ_SPLITS[][2] {
 double delta = 1;
 double lastFrameTime = 0;
 
-double led_values[LD_COUNT] = { 0, 0, 0, 0, 0 };
-
+// Sampling
 int8_t vReal[SAMPLES];
 int8_t vImag[SAMPLES];
 
+double led_values[LD_COUNT] = { 0, 0, 0, 0, 0 };
 uint8_t decay = 1;
+double amplify = AMP_MAX_MULT;
+double energy = 0;
+uint8_t energySmooth = 0;
 uint8_t strobe = 0;
-double amplify = 1;
-
 bool strobePos = 0;
 
 // Initialize screen. Following line is for OLED 128x64 connected by I2C
@@ -80,17 +95,13 @@ void fps() {
 }
  
 void setup() {
-  Serial.begin(115200);
+  // Serial.begin(115200);
   
   // Setup leds
   for (uint8_t i=0; i<LD_COUNT; i++) {
     pinMode(LED[i], OUTPUT);
     digitalWrite(LED[i], HIGH);
-  }
-
-  delay(500);
-  // Reset leds
-  for (uint8_t i=0; i<LD_COUNT; i++) {
+    delay(100);
     digitalWrite(LED[i], LOW);
   }
 
@@ -117,12 +128,17 @@ void setup() {
  
 void loop() {
   uint8_t led_avgs[LD_COUNT] = { 0, 0, 0, 0, 0 };
+  uint8_t inputPeak = 0;
+  int8_t ampPeak;
+  int8_t fundamental = -1;
+  int8_t fqPeak = 0;
+  uint8_t i, j;
+  bool flash_on;
 
   display.clearDisplay();
   
   // Sampling
-  uint8_t inputPeak = 0;
-  for(uint8_t i=0; i<SAMPLES; i++) {
+  for(i=0; i<SAMPLES; i++) {
     #ifdef FREE_RUN_MODE
     while(!(ADCSRA & 0x10));                // wait for ADC to complete current conversion ie ADIF bit set
     ADCSRA = 0b11110101 ;                   // clear ADIF bit so that ADC can do next operation (0xf5)
@@ -138,7 +154,7 @@ void loop() {
   }
 
   // Amplify
-  double ampPeak = inputPeak * amplify;
+  ampPeak = (double) inputPeak * amplify;
   if (ampPeak < AMP_MAX_LEVEL) {
     if (amplify < AMP_MAX_MULT) {
       amplify += AMP_RELEASE; 
@@ -147,7 +163,7 @@ void loop() {
     amplify = (double) AMP_MAX_LEVEL / inputPeak;
   }
 
-  for(int i=0; i<SAMPLES; i++) {
+  for(i=0; i<SAMPLES; i++) {
     vReal[i] = (double) amplify * vReal[i];
     
     // draw osc 
@@ -156,39 +172,52 @@ void loop() {
   
   // FFT
   fix_fft(vReal, vImag, 7, 0);   
-  int8_t fundamental = -1;
-  for (byte i = 0; i < 64; i++) {
+  for (i = 0; i < 64; i++) {
     vReal[i] = sqrt(vReal[i] * vReal[i] + vImag[i] * vImag[i]); // Make values positive
     if (fundamental == -1 || vReal[fundamental] < vReal[i]) {
       fundamental = i;
     }
+    if (vReal[i] > fqPeak) {
+      fqPeak = vReal[i];
+    }
   }
  
-  // Led value calculation
-  for(uint8_t i=0; i<32; i++) {
-    // Leds
-    for (char j=0; j<LD_COUNT; j++) {
+  // FFT processing
+  energy = max(0, energy - ENERGY_DECAY * delta);
+  
+  for(i=0; i<32; i++) {
+    // Led value calculation
+    for (j=0; j<LD_COUNT; j++) {
       if (i >= FREQ_SPLITS[j][0] && i < FREQ_SPLITS[j][1]) {
         led_avgs[j] = led_avgs[j] + vReal[i];
       }
     }
+
+    // energy calculation
+    if (i > ENERGY_BASE_FREQ) {
+      energy = min(ENERGY_MAX, energy + (double) vReal[i] / fqPeak * ENERGY_MULT);
+    }
   }
     
-  // draw columns
-  for(uint8_t i=0; i<32; i++) {
-    uint8_t value = vReal[i];
-    display.drawFastVLine(i * 4, 63 - value, value, 1);  
+  // Flash only turns on when increases
+  flash_on = led_avgs[LD_FLASH] - led_values[LD_FLASH] > LED_THRESHOLD[LD_FLASH];
+  
+  if (flash_on) {
+    energy = min(ENERGY_MAX, energy + ENERGY_KICK);
   }
 
-  // Flash only turns on when increases
-  bool flash_on = led_avgs[LD_FLASH] - led_values[LD_FLASH] > LED_THRESHOLD[LD_FLASH];
+  // Smoothed energy
+  energySmooth += (double) (energy - energySmooth) / ENERGY_SMOOTHNESS;
 
-  // high energy
-  bool high_energy = led_avgs[LD_FLASH] > LED_THRESHOLD[LD_FLASH];
+  /*
+  Serial.print(energySmooth);
+  Serial.print(" ");
+  Serial.print(energy);
+  Serial.println();
+  */
   
   // led control
-  uint8_t leds_on = 0;
-  for (uint8_t j=0; j<LD_COUNT; j++) {
+  for (j=0; j<LD_COUNT; j++) {
     bool on = j == LD_FLASH 
       ? flash_on 
       : led_avgs[j] > LED_THRESHOLD[j];
@@ -199,7 +228,6 @@ void loop() {
     } else {
       if (on) {
         led_values[j] = min(led_avgs[j], (double) led_values[j] + decay * delta);
-        leds_on++;
       } else {
         led_values[j] = max(0, (double) led_values[j] - decay * delta);
       }
@@ -214,7 +242,6 @@ void loop() {
       display.drawRoundRect(j * 13 + 4 - siz / 2, 4 - siz / 2, siz, siz, 2, 1);  
     }
 
-    // Debug
     display.drawFastHLine(j * 13, 10, led_avgs[j] / 8, 1);
     
     analogWrite(LED[j], (double) siz / 8 * 128);
@@ -230,7 +257,7 @@ void loop() {
   }
 
   // Strobe control
-  if (leds_on >= ST_TRIGGER_LEDS) {
+  if (energy > ENERGY_HIGH) {
     strobe = min(250, (double) strobe + ST_INCREMENT * delta);
   } else {
     strobe = max(0, (double) strobe - ST_DECAY * delta);
@@ -241,18 +268,26 @@ void loop() {
     strobePos = !strobePos;
   }
 
+  // draw columns
+  for (uint8_t i=0; i<32; i++) {
+    display.drawFastVLine(i * 4, 63 - vReal[i], vReal[i], 1);  
+  }
+
   // peak line
   display.drawFastHLine(64, 0, ampPeak / AMP_MAX_LEVEL * 64, 1);
 
   // amp line
   display.drawFastHLine(64, 2, amplify / AMP_MAX_MULT * 64, 1);
 
-  // show energy line (based on decay)
+  // show decay line
   display.drawFastHLine(64, 4, (double) decay / LD_MAX_DECAY * 64, 1);
 
+  // show energy
+  display.drawFastHLine(64, 6, (double) energy / 256 * 64, 1);
+
   // show strobe line
-  display.drawFastHLine(64, 6, (double) strobe / 256 * 64, 1);
-  display.drawPixel(64 + (double) ST_START / 256 * 64, 6, 1);
+  display.drawFastHLine(64, 8, (double) strobe / 256 * 64, 1);
+  display.drawPixel(64 + (double) ST_START / 256 * 64, 8, 1);
   
   display.display();
   // -- send to display according measured value
