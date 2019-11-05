@@ -30,12 +30,12 @@
 // Energy value increases with the sum of frequencies
 // and decreases on the time.
 #define ENERGY_MAX    255
-#define ENERGY_MULT   3.2
-#define ENERGY_KICK   5
+#define ENERGY_MULT   3.4
+#define ENERGY_KICK   0
 #define ENERGY_DECAY  18
 #define ENERGY_HIGH   180
-#define ENERGY_BASE_FREQ  3
-#define ENERGY_SMOOTHNESS 8
+#define ENERGY_BASE_FREQ  4
+#define ENERGY_SMOOTHNESS 18
 
 // Strobe is increased on high energy. When it reach
 // ST_START value, the flash led starts to blink.
