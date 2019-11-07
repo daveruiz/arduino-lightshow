@@ -11,12 +11,13 @@
 #include <Wire.h>
 #include <Adafruit_SSD1306.h>
 
-// #define FREE_RUN_MODE       // Requires the AREF pin. Not working in Mini pro :(
-                               // Normal mode uses internal DEFAULT for reference
+// #define FREE_RUN_MODE       // Doesn´t work pretty well, probably because the voltage reference
+                               // If commented, uses analogRead(default)
 
 #define SCR_ROTATION  2
 
 #define SAMPLES       128
+#define DC_OFFSET     69       // This is to compensate my bad skills in circuitery (FREE_RUN_MODE only)
 #define FRAME_TIME    63       // Desired time per frame in ms (63 is ~15 fps)
 
 // Led control
@@ -58,7 +59,7 @@ const uint8_t LED[] = { 12, 11, 10, 9, 6 };                 // PWD enabled pins
 // Frequency is very timing dependant, so we define different
 // values for different methods.
 #ifdef FREE_RUN_MODE
-const uint8_t LED_THRESHOLD[] = { 9, 7, 6, 7, 10 };
+const uint8_t LED_THRESHOLD[] = { 9, 7, 6, 7, 15 };
 const uint8_t FREQ_SPLITS[][2] { 
    { 0, 1 },
    { 1, 4 },
@@ -123,10 +124,16 @@ void setup() {
   // Rotate the screen
   display.setRotation(SCR_ROTATION);
 
+  // Setup Input
   #ifdef FREE_RUN_MODE
-  // TIMSK0 = 1;            // turn off timer0 for lower jitter
-  ADCSRA = 0b11100101;      // set ADC to free running mode and set pre-scalar to 32 (0xe5)
-  ADMUX = 0b00000000;       // use pin A0 and external voltage reference
+  ADCSRA = 0;
+  ADCSRB = 0;
+  ADMUX |= (1 << REFS0);       // Set reference
+  ADMUX |= (1 << ADLAR);       // Use 8bit register
+  ADCSRA |= (1 << ADPS2) | (1 << ADPS0); // Set ADC clock to pre-scalar to 32
+  ADCSRA |= (1 << ADATE);      // Enable auto-trigger
+  ADCSRA |= (1 << ADEN);       // Enable ADC
+  ADCSRA |= (1 << ADSC);       // Start ADC measurements
   DIDR0 = 0x01;             // turn off the digital input for adc0
   #else
   analogReference(DEFAULT);
@@ -151,9 +158,9 @@ void loop() {
     #ifdef FREE_RUN_MODE
     while(!(ADCSRA & 0x10));                // wait for ADC to complete current conversion ie ADIF bit set
     ADCSRA = 0b11110101 ;                   // clear ADIF bit so that ADC can do next operation (0xf5)
-    vReal[i]= (ADC - 512) / 8;              // Copy to bins after compressing
+    vReal[i] = ADCH - DC_OFFSET;            // Copy to bins.
     #else
-    vReal[i]= (analogRead(A0) - 512) / 8;              // Copy to bins after compressing
+    vReal[i] = (analogRead(A0) - 512) / 4;   // Copy to bins after compressing
     #endif
     vImag[i] = 0;
 
@@ -161,7 +168,7 @@ void loop() {
       inputPeak = abs(vReal[i]);
     }
   }
-
+  
   // Silence detection
   if (inputPeak < SILENCE_MIN_LEVEL) {
     if (silence < SILENCE_FRAMES) {
@@ -234,12 +241,10 @@ void loop() {
   // Smoothed energy
   energySmooth += (double) (energy - energySmooth) / ENERGY_SMOOTHNESS;
 
-  /*
-  Serial.print(energySmooth);
-  Serial.print(" ");
-  Serial.print(energy);
-  Serial.println();
-  */
+  // Serial.print(energySmooth);
+  // Serial.print(" ");
+  // Serial.print(energy);
+  // Serial.println();
   
   // led control
   for (j=0; j<LD_COUNT; j++) {
@@ -259,7 +264,7 @@ void loop() {
     }
 
     // Draw pills
-    char siz = min(8, (double) led_values[j] / (double) LED_THRESHOLD[j] * 8);
+    uint8_t siz = min(8, (double) led_values[j] / (double) LED_THRESHOLD[j] * 8);
     
     if (on) {
       display.fillRoundRect(j * 13 + 4 - siz / 2, 4 - siz / 2, siz, siz, 2, 1); 
